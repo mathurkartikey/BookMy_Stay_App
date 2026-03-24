@@ -1,109 +1,87 @@
 /**
- * UseCase10BookingCancellation
+ * UseCase11ConcurrentBookingSimulation
  *
- * Demonstrates booking cancellation with inventory rollback using Stack.
+ * Demonstrates thread-safe booking using synchronized blocks.
+ * Prevents race conditions and double booking.
  *
  * @author Kartikey
- * @version 10.0
+ * @version 11.0
  */
 
 import java.util.*;
 
 // Reservation
 class Reservation {
-    String reservationId;
     String guestName;
     String roomType;
-    String roomId;
 
-    public Reservation(String reservationId, String guestName, String roomType, String roomId) {
-        this.reservationId = reservationId;
+    public Reservation(String guestName, String roomType) {
         this.guestName = guestName;
         this.roomType = roomType;
-        this.roomId = roomId;
     }
 }
 
-// Inventory
+// Shared Inventory (critical resource)
 class RoomInventory {
     private Map<String, Integer> availability = new HashMap<>();
 
     public RoomInventory() {
         availability.put("Single Room", 1);
-        availability.put("Double Room", 1);
     }
 
-    public void increaseAvailability(String roomType) {
-        availability.put(roomType, availability.get(roomType) + 1);
+    // 🔥 Critical Section
+    public synchronized boolean allocateRoom(String roomType) {
+
+        int available = availability.getOrDefault(roomType, 0);
+
+        if (available > 0) {
+            availability.put(roomType, available - 1);
+            return true;
+        }
+
+        return false;
     }
 
     public void display() {
-        System.out.println("Current Inventory:");
-        for (String type : availability.keySet()) {
-            System.out.println(type + ": " + availability.get(type));
-        }
-        System.out.println();
+        System.out.println("Final Inventory: " + availability);
     }
 }
 
-// Booking History
-class BookingHistory {
-    private Map<String, Reservation> bookings = new HashMap<>();
+// Booking Processor (Runnable)
+class BookingProcessor implements Runnable {
 
-    public void add(Reservation r) {
-        bookings.put(r.reservationId, r);
-    }
-
-    public Reservation get(String id) {
-        return bookings.get(id);
-    }
-
-    public void remove(String id) {
-        bookings.remove(id);
-    }
-}
-
-// 🔥 Cancellation Service
-class CancellationService {
-
+    private Queue<Reservation> queue;
     private RoomInventory inventory;
-    private BookingHistory history;
 
-    // Stack for rollback (LIFO)
-    private Stack<String> releasedRoomIds = new Stack<>();
-
-    public CancellationService(RoomInventory inventory, BookingHistory history) {
+    public BookingProcessor(Queue<Reservation> queue, RoomInventory inventory) {
+        this.queue = queue;
         this.inventory = inventory;
-        this.history = history;
     }
 
-    public void cancel(String reservationId) {
+    @Override
+    public void run() {
 
-        // Validate existence
-        Reservation r = history.get(reservationId);
+        while (true) {
 
-        if (r == null) {
-            System.out.println("Cancellation Failed ❌");
-            System.out.println("Reason: Reservation not found\n");
-            return;
+            Reservation request;
+
+            // 🔒 Synchronize queue access
+            synchronized (queue) {
+                if (queue.isEmpty()) break;
+                request = queue.poll();
+            }
+
+            // Try booking
+            boolean success = inventory.allocateRoom(request.roomType);
+
+            if (success) {
+                System.out.println(Thread.currentThread().getName()
+                        + " → Booking SUCCESS for " + request.guestName);
+            } else {
+                System.out.println(Thread.currentThread().getName()
+                        + " → Booking FAILED for " + request.guestName);
+            }
         }
-
-        // Push to stack (rollback tracking)
-        releasedRoomIds.push(r.roomId);
-
-        // Restore inventory
-        inventory.increaseAvailability(r.roomType);
-
-        // Remove booking
-        history.remove(reservationId);
-
-        System.out.println("Cancellation Successful ✅");
-        System.out.println("Reservation ID: " + reservationId);
-        System.out.println("Released Room ID: " + r.roomId + "\n");
-    }
-
-    public void showRollbackStack() {
-        System.out.println("Rollback Stack (Recent Releases): " + releasedRoomIds);
     }
 }
 
@@ -112,29 +90,34 @@ public class HotelBookingApp {
 
     public static void main(String[] args) {
 
-        // Setup
+        // Shared queue
+        Queue<Reservation> queue = new LinkedList<>();
+
+        // Multiple requests for SAME room → race condition test
+        queue.offer(new Reservation("Amit", "Single Room"));
+        queue.offer(new Reservation("Riya", "Single Room"));
+        queue.offer(new Reservation("John", "Single Room"));
+
+        // Shared inventory
         RoomInventory inventory = new RoomInventory();
-        BookingHistory history = new BookingHistory();
 
-        // Simulate confirmed bookings
-        history.add(new Reservation("R101", "Amit", "Single Room", "S-001"));
-        history.add(new Reservation("R102", "Riya", "Double Room", "D-001"));
+        // Threads (simulate users)
+        Thread t1 = new Thread(new BookingProcessor(queue, inventory), "Thread-1");
+        Thread t2 = new Thread(new BookingProcessor(queue, inventory), "Thread-2");
 
-        CancellationService service = new CancellationService(inventory, history);
+        // Start threads
+        t1.start();
+        t2.start();
 
-        // Initial inventory
+        // Wait for completion
+        try {
+            t1.join();
+            t2.join();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        // Final state
         inventory.display();
-
-        // Cancel booking
-        service.cancel("R101");
-
-        // After cancellation
-        inventory.display();
-
-        // Try invalid cancellation
-        service.cancel("R999");
-
-        // Show rollback stack
-        service.showRollbackStack();
     }
 }
